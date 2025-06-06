@@ -1,93 +1,96 @@
 'use client';
 
+import { useUser } from '@clerk/nextjs';
 import React, { useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import Link from 'next/link';
-import { useOrganizationList, useUser } from '@clerk/nextjs';
+import { getUserGroups, updateMemberUserId } from '@/app/actions';
+import type { Group } from '@/app/actions';
+import toast from 'react-hot-toast';
 
-type Group = {
-  id: string;
-  name: string;
-  role: string;
-  initials: string;
-};
-
-const GroupItem = ({
-  name,
-  role,
-  initials,
-  id,
-}: {
-  name: string;
-  role: string;
-  initials: string;
-  id: string;
-}) => (
-  <Link href={`/group/${id}`}>
-    <div className="flex items-center space-x-4 p-4 bg-white rounded-lg shadow mb-4">
-      <div className="w-10 h-10 rounded-full bg-purple-500 flex items-center justify-center text-white font-bold">
-        {initials}
-      </div>
-      <div className="flex-grow">
-        <h3 className="font-semibold">{name}</h3>
-        <p className="text-gray-500 text-sm">
-          {role === 'org:admin' ? 'Admin' : 'Member'}
-        </p>
-      </div>
-    </div>
-  </Link>
-);
-
-const YourGroups = () => {
+export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
-  const { userMemberships, isLoaded } = useOrganizationList({ userMemberships: true });
-  const { user } = useUser();
+  const [loading, setLoading] = useState(true);
+  const { user, isLoaded } = useUser();
+  const router = useRouter();
 
   useEffect(() => {
-    if (isLoaded && userMemberships.data) {
-      const userGroups = userMemberships.data.map((membership) => {
-        const name = membership.organization.name;
-        const role = membership.role;
-        const initials = name
-          .split(' ')
-          .map((n) => n[0])
-          .join('')
-          .toUpperCase();
-        return {
-          id: membership.organization.id,
-          name,
-          role,
-          initials,
-        };
-      });
-      setGroups(userGroups);
+    async function fetchGroups() {
+      if (user) {
+        try {
+          // Update any pending memberships with the user's ID
+          await updateMemberUserId(user.emailAddresses[0].emailAddress, user.id);
+          
+          // Fetch groups
+          const result = await getUserGroups(user.id);
+          if (result.success) {
+            setGroups(result.groups as Group[]);
+          }
+        } catch (error) {
+          console.error('Error fetching groups:', error);
+          toast.error('Failed to load groups');
+        } finally {
+          setLoading(false);
+        }
+      }
     }
-  }, [isLoaded, userMemberships.data]);
 
-  if (!isLoaded || !user) {
+    if (isLoaded) {
+      fetchGroups();
+    }
+  }, [isLoaded, user]);
+
+  if (!isLoaded) {
     return <div>Loading...</div>;
   }
 
+  if (!user) {
+    return <div>Please sign in to view your groups.</div>;
+  }
+
+  if (loading) {
+    return <div>Loading groups...</div>;
+  }
+
   return (
-    <div className="max-w-2xl mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-4">Your Groups</h1>
-      <p className="text-gray-600 mb-6">
-        View and manage all your groups in one place.
-      </p>
-      <div className="space-y-8">
-        {groups.map((group, index) => (
-          <GroupItem key={index} {...group} id={group.id} />
-        ))}
+    <div className="container mx-auto p-4">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold">Your Groups</h1>
+        <Button onClick={() => router.push('/group')}>Create New Group</Button>
       </div>
-      <Link href="/group">
-        <Button className="mt-6 bg-purple-600 hover:bg-purple-700 text-white flex items-center justify-center p-4 rounded-lg shadow mb-4">
-          <Plus className="w-4 h-4 mr-2" />
-          Create New Group
-        </Button>
-      </Link>
+
+      {groups.length === 0 ? (
+        <div className="text-center py-8">
+          <p className="text-gray-500">You haven't joined any groups yet.</p>
+          <Button 
+            onClick={() => router.push('/group')}
+            className="mt-4"
+          >
+            Create Your First Group
+          </Button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {groups.map((group) => (
+            <Card key={group.id} className="hover:shadow-lg transition-shadow">
+              <CardContent className="p-4">
+                <h2 className="text-xl font-semibold mb-2">{group.name}</h2>
+                <p className="text-sm text-gray-500">
+                  Created on {new Date(group.created_at).toLocaleDateString()}
+                </p>
+                <Button
+                  onClick={() => router.push(`/group/${group.id}`)}
+                  className="mt-4 w-full"
+                >
+                  View Group
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
-};
-
-export default YourGroups;
+}

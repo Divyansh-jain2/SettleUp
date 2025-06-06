@@ -1,151 +1,145 @@
 'use client';
 
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { useOrganizationList, useUser } from '@clerk/nextjs';
-import { PlusCircle } from 'lucide-react';
+import { useUser } from '@clerk/nextjs';
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import toast from 'react-hot-toast';
+import { createGroup, addGroupMember } from '../actions';
 
 export default function CreateGroup() {
   const [groupName, setGroupName] = useState('');
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [invitedMembers, setInvitedMembers] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const { user } = useUser();
-  const { createOrganization, userMemberships } = useOrganizationList();
+  const [memberEmail, setMemberEmail] = useState('');
+  const [memberEmails, setMemberEmails] = useState<string[]>([]);
+  const { user, isLoaded } = useUser();
   const router = useRouter();
 
-  const handleCreateGroup = async (e: React.FormEvent) => {
+  const handleAddMember = () => {
+    if (!memberEmail || !memberEmail.includes('@')) {
+      toast.error('Please enter a valid email address');
+      return;
+    }
+    if (memberEmails.includes(memberEmail)) {
+      toast.error('This email is already in the list');
+      return;
+    }
+    setMemberEmails([...memberEmails, memberEmail]);
+    setMemberEmail('');
+  };
+
+  const handleRemoveMember = (email: string) => {
+    setMemberEmails(memberEmails.filter(e => e !== email));
+  };
+
+  const handleCreateGroup = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!user) {
       toast.error('You must be logged in to create a group');
       return;
     }
 
-    setIsLoading(true);
-    try {
-      if (!createOrganization) {
-        throw new Error('createOrganization function is undefined');
-      }
-      const organization = await createOrganization({ name: groupName });
+    if (!user.emailAddresses?.[0]?.emailAddress) {
+      toast.error('Your email address is not available');
+      return;
+    }
 
-      // Invite members individually and catch errors for already existing members.
-      for (const email of invitedMembers) {
-        try {
-          await organization.inviteMember({
-            emailAddress: email,
-            role: 'org:member',
-          });
-        } catch (inviteError: unknown) {
-          if (
-            inviteError instanceof Error &&
-            inviteError.message.includes('is already a member')
-          ) {
-            console.info(`${email} is already a member, skipping invite.`);
-          } else {
-            console.error('Error inviting member:', inviteError);
-            toast.error(`Failed to invite ${email}.`);
-          }
+    try {
+      // Create the group
+      const result = await createGroup(
+        groupName,
+        user.id,
+        user.emailAddresses[0].emailAddress
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create group');
+      }
+
+      // Add members to the group
+      for (const email of memberEmails) {
+        const memberResult = await addGroupMember(result.groupId, email);
+        if (!memberResult.success) {
+          console.warn(`Failed to add member ${email}: ${memberResult.error}`);
         }
       }
 
-      // Wait for the organization list to be refreshed
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      
-      // Verify that the organization exists in the user's memberships
-      const orgExists = userMemberships.data?.some(
-        (membership) => membership.organization.id === organization.id
-      );
-
-      if (!orgExists) {
-        throw new Error('Organization not found in user memberships');
-      }
-
       toast.success('Group created successfully!');
-      router.push(`/group/${organization.id}`);
+      router.push(`/group/${result.groupId}`);
     } catch (error) {
       console.error('Error creating group:', error);
       toast.error('Failed to create group. Please try again.');
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  const handleInvite = () => {
-    if (inviteEmail && !invitedMembers.includes(inviteEmail)) {
-      setInvitedMembers([...invitedMembers, inviteEmail]);
-      setInviteEmail('');
-    }
-  };
+  if (!isLoaded) {
+    return <div>Loading...</div>;
+  }
 
   return (
     <div className="container mx-auto px-4 py-8 sm:px-6 lg:px-8 max-w-2xl">
-      <h1 className="text-2xl font-bold mb-2">Create a group</h1>
-      <p className="text-gray-600 mb-6">
-        Split expenses with friends, roommates, and more.
-      </p>
-
+      <h1 className="text-2xl font-bold mb-2">Create a New Group</h1>
+      <p className="text-gray-600 mb-6">Create a group and add members to start splitting expenses.</p>
       <form onSubmit={handleCreateGroup} className="space-y-6">
         <div>
-          <label
-            htmlFor="groupName"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
-            Group name
-          </label>
+          <Label htmlFor="groupName" className="block text-sm font-medium text-gray-700 mb-1">
+            Group Name
+          </Label>
           <Input
             id="groupName"
-            name="groupName"
-            type="text"
             placeholder="Enter group name"
-            className="w-full"
             value={groupName}
             onChange={(e) => setGroupName(e.target.value)}
             required
+            className="w-full"
           />
         </div>
 
         <div>
-          <label
-            htmlFor="inviteEmail"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
-            Invite members
-          </label>
-          <div className="flex space-x-2">
+          <Label htmlFor="memberEmail" className="block text-sm font-medium text-gray-700 mb-1">
+            Add Members
+          </Label>
+          <div className="flex gap-2">
             <Input
-              id="inviteEmail"
-              name="inviteEmail"
+              id="memberEmail"
               type="email"
-              placeholder="Enter email address"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              className="flex-grow"
+              placeholder="Enter member's email"
+              value={memberEmail}
+              onChange={(e) => setMemberEmail(e.target.value)}
+              className="flex-1"
             />
-            <Button type="button" onClick={handleInvite} disabled={isLoading}>
-              <PlusCircle className="mr-2 h-4 w-4" />
-              Invite
+            <Button type="button" onClick={handleAddMember}>
+              Add
             </Button>
           </div>
         </div>
 
-        {invitedMembers.length > 0 && (
+        {memberEmails.length > 0 && (
           <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-2">
-              Invited members:
-            </h3>
-            <ul className="list-disc pl-5">
-              {invitedMembers.map((email, index) => (
-                <li key={index}>{email}</li>
+            <Label className="block text-sm font-medium text-gray-700 mb-1">
+              Members
+            </Label>
+            <div className="space-y-2">
+              {memberEmails.map((email) => (
+                <div key={email} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                  <span>{email}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRemoveMember(email)}
+                  >
+                    Remove
+                  </Button>
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
         )}
 
-        <Button className="w-full" type="submit" disabled={isLoading}>
-          {isLoading ? 'Creating...' : 'Create Group'}
+        <Button type="submit" className="w-full">
+          Create Group
         </Button>
       </form>
     </div>

@@ -4,8 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Trash2, CheckCircle2 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
-import { useOrganizationList, useUser } from '@clerk/nextjs';
-import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, deleteOrganization } from '@/app/actions';
+import { useUser } from '@clerk/nextjs';
+import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, getGroupMembers, GroupMember, getUserGroups, markSettlementAsCompleted } from '@/app/actions';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
@@ -17,22 +17,41 @@ const formatAmount = (amount: number | string) => {
 
 function GroupPage() {
   const { id } = useParams();
-  const { userMemberships, isLoaded: orgLoaded } = useOrganizationList({ userMemberships: { infinite: true } });
   const { user, isLoaded: userLoaded } = useUser();
   const router = useRouter();
   const [requests, setRequests] = useState<ActionRequest[]>([]);
   const [settlements, setSettlements] = useState<SettlementTransaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [groupName, setGroupName] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
       if (id && user) {
-        console.log('Fetching data for group:', id);
-        const { requests } = await getGroupRequests(id as string);
-        setRequests(requests);
-        const optimizedSettlements = await getOptimizedSettlements(id as string);
-        setSettlements(optimizedSettlements);
-        setLoading(false);
+        try {
+          // Get group name and check if user is admin
+          const { groups } = await getUserGroups(user.id);
+          const currentGroup = groups?.find(g => g.id === id);
+          if (currentGroup) {
+            setGroupName(currentGroup.name);
+          }
+
+          // Get group members to check if user is admin
+          const { members } = await getGroupMembers(id as string);
+          const currentUser = members.find(m => m.user_id === user.id);
+          setIsAdmin(currentUser?.role === 'admin');
+
+          // Get group requests and settlements
+          const { requests } = await getGroupRequests(id as string);
+          setRequests(requests);
+          const optimizedSettlements = await getOptimizedSettlements(id as string);
+          setSettlements(optimizedSettlements);
+          setLoading(false);
+        } catch (error) {
+          console.error('Error fetching group data:', error);
+          toast.error('Failed to load group data');
+          setLoading(false);
+        }
       }
     }
     if (userLoaded) {
@@ -40,7 +59,7 @@ function GroupPage() {
     }
   }, [id, user, userLoaded]);
 
-  if (!userLoaded || !orgLoaded || loading) {
+  if (!userLoaded || loading) {
     return (
       <div className="flex justify-center items-center h-screen">
         <p className="text-xl text-gray-600">Loading...</p>
@@ -51,28 +70,6 @@ function GroupPage() {
   if (!user) {
     return <div>You must be logged in to view this page.</div>;
   }
-
-  const selectedOrganization = userMemberships.data?.find(
-    (membership) => membership.organization.id === id
-  );
-
-  if (!selectedOrganization) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen">
-        <h1 className="text-2xl font-bold text-red-600 mb-4">Organization not found</h1>
-        <p className="text-gray-600 mb-4">
-          You might not have access to this organization or it doesn&apos;t exist.
-        </p>
-        <Link href="/groups">
-          <Button className="bg-purple-600 text-white px-4 py-2 rounded-md">
-            Back to Groups
-          </Button>
-        </Link>
-      </div>
-    );
-  }
-
-  const isAdmin = selectedOrganization.role === 'org:admin';
 
   const handleDeleteRequest = async (requestId: string) => {
     if (!isAdmin) {
@@ -116,19 +113,20 @@ function GroupPage() {
     const confirmed = window.confirm('Are you sure you want to delete this group? This will delete all requests in the group and cannot be undone.');
     if (confirmed) {
       try {
-        // First delete all requests in the group
-        const deleteRequestsResult = await deleteGroup(id as string);
-        if (!deleteRequestsResult.success) {
-          throw new Error('Failed to delete group requests');
-        }
-
-        // Then delete the organization
-        const deleteOrgResult = await deleteOrganization(id as string);
-        if (!deleteOrgResult.success) {
-          throw new Error('Failed to delete organization');
+        const result = await deleteGroup(id as string);
+        if (!result.success) {
+          throw new Error('Failed to delete group');
         }
 
         toast.success('Group deleted successfully');
+        
+        // Refresh the page data
+        router.refresh();
+        
+        // Wait a moment for the refresh to complete
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Then redirect to groups page
         router.push('/groups');
       } catch (error) {
         console.error('Error deleting group:', error);
@@ -137,11 +135,38 @@ function GroupPage() {
     }
   };
 
+  const handleMarkSettlementAsCompleted = async (settlement: SettlementTransaction) => {
+    if (!user) return;
+    
+    try {
+      const result = await markSettlementAsCompleted(
+        id as string,
+        settlement.from.id,
+        settlement.to.id,
+        settlement.amount
+      );
+      
+      if (result.success) {
+        // Refresh the data
+        const { requests } = await getGroupRequests(id as string);
+        setRequests(requests);
+        const optimizedSettlements = await getOptimizedSettlements(id as string);
+        setSettlements(optimizedSettlements);
+        toast.success('Settlement marked as completed');
+      } else {
+        toast.error('Failed to mark settlement as completed');
+      }
+    } catch (error) {
+      console.error('Error marking settlement as completed:', error);
+      toast.error('Failed to mark settlement as completed');
+    }
+  };
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold mb-4">
-          {selectedOrganization.organization.name}
+          {groupName}
         </h1>
         <div className="flex gap-2">
           {isAdmin && (
@@ -166,11 +191,21 @@ function GroupPage() {
         settlements.map((settlement, index) => (
           <Card key={index} className="mb-4">
             <CardContent className="p-6">
-              <p className="text-lg">
-                <span className="font-semibold">{settlement.from.email}</span> should pay{' '}
-                <span className="font-semibold">₹{formatAmount(settlement.amount)}</span> to{' '}
-                <span className="font-semibold">{settlement.to.email}</span>
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-lg">
+                  <span className="font-semibold">{settlement.from.email}</span> should pay{' '}
+                  <span className="font-semibold">₹{formatAmount(settlement.amount)}</span> to{' '}
+                  <span className="font-semibold">{settlement.to.email}</span>
+                </p>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => handleMarkSettlementAsCompleted(settlement)}
+                  className="text-green-600 hover:text-green-700"
+                >
+                  <CheckCircle2 size={20} />
+                </Button>
+              </div>
             </CardContent>
           </Card>
         ))
@@ -189,8 +224,7 @@ function GroupPage() {
                   Amount: ₹{formatAmount(req.amount)} | Created by: {req.created_by_email} | Request To: {req.request_to.email}
                 </p>
                 <p className="text-sm text-gray-500 mt-1">
-                  Status:{' '}
-                  <span className={req.status === 'settled' ? 'text-green-600' : 'text-yellow-600'}>
+                  Status: <span className={req.status === 'settled' ? 'text-green-600' : 'text-yellow-600'}>
                     {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
                   </span>
                   {req.settled_at && ` • Settled on ${new Date(req.settled_at).toLocaleDateString()}`}

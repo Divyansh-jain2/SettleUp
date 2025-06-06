@@ -1,29 +1,24 @@
 'use client';
 
-import { useOrganization, useOrganizationList, useUser } from '@clerk/nextjs';
-import React, { useEffect, useState, useCallback } from 'react';
+import { useUser } from '@clerk/nextjs';
+import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { addRequest } from '../actions';
+import { addRequest, getUserGroups, getGroupMembers, Group } from '../actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui/select';
 
-interface Organization {
-  id: string;
-  name: string;
-}
-
 interface Member {
-  id: string;
-  name: string;
-  email: string;
+  user_id: string;
+  user_email: string;
+  role: string;
 }
 
 export default function AddRequest() {
@@ -31,57 +26,56 @@ export default function AddRequest() {
   const [description, setDescription] = useState('');
   const [group, setGroup] = useState('');
   const [requestTo, setRequestTo] = useState<Member | null>(null);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const { user, isLoaded: isUserLoaded } = useUser();
-  const { userMemberships, isLoaded: isOrgListLoaded } = useOrganizationList({ userMemberships: true });
-  const { isLoaded: isOrgLoaded } = useOrganization();
-
-  const fetchMembers = useCallback(async (orgId: string) => {
-    try {
-      const org = userMemberships.data?.find(
-        (membership) => membership.organization.id === orgId
-      )?.organization;
-      if (org) {
-        const memberships = await org.getMemberships();
-        const membersList = memberships.data.map((membership) => ({
-          id: membership.publicUserData?.userId ?? '',
-          name: `${membership.publicUserData?.firstName ?? ''} ${membership.publicUserData?.lastName ?? ''}`.trim(),
-          email: membership.publicUserData?.identifier ?? '',
-        }));
-        console.log('Fetched members:', membersList); // Debug log
-        setMembers(membersList);
-      }
-    } catch (error) {
-      console.error('Error fetching members:', error);
-      toast.error('Failed to fetch group members. Please try again.');
-    }
-  }, [userMemberships.data]);
 
   useEffect(() => {
-    if (isOrgListLoaded && userMemberships.data) {
-      const orgs = userMemberships.data.map((membership) => ({
-        id: membership.organization.id,
-        name: membership.organization.name,
-      }));
-      setOrganizations(orgs);
-      if (orgs.length > 0 && !group) {
-        const defaultOrgId = orgs[0].id;
-        setGroup(defaultOrgId);
-        fetchMembers(defaultOrgId);
+    async function fetchGroups() {
+      if (user) {
+        try {
+          const result = await getUserGroups(user.id);
+          if (result.success && result.groups) {
+            setGroups(result.groups as Group[]);
+            if (result.groups.length > 0 && !group) {
+              const defaultGroupId = result.groups[0].id;
+              setGroup(defaultGroupId);
+              fetchMembers(defaultGroupId);
+            }
+          }
+          setLoading(false);
+        } catch (error) {
+          console.error('Error fetching groups:', error);
+          toast.error('Failed to fetch groups');
+          setLoading(false);
+        }
       }
     }
-  }, [isOrgListLoaded, userMemberships.data, group, fetchMembers]);
+    if (isUserLoaded) {
+      fetchGroups();
+    }
+  }, [isUserLoaded, user, group]);
 
-  const handleGroupChange = (orgId: string) => {
-    setGroup(orgId);
-    fetchMembers(orgId);
+  const fetchMembers = async (groupId: string) => {
+    try {
+      const { members } = await getGroupMembers(groupId);
+      setMembers(members as Member[]);
+    } catch (error) {
+      console.error('Error fetching members:', error);
+      toast.error('Failed to fetch group members');
+    }
+  };
+
+  const handleGroupChange = (groupId: string) => {
+    setGroup(groupId);
+    fetchMembers(groupId);
     setRequestTo(null);
   };
 
   const handleRequestToSelect = (value: string) => {
-    const selectedMember = members.find((member) => member.id === value);
+    const selectedMember = members.find((member) => member.user_id === value);
     if (selectedMember) {
       setRequestTo(selectedMember);
     }
@@ -114,8 +108,8 @@ export default function AddRequest() {
       groupId: group,
       createdBy: user.id,
       requestTo: { 
-        id: requestTo.id, 
-        email: requestTo.email 
+        id: requestTo.user_id, 
+        email: requestTo.user_email 
       },
       createdByEmail: user.emailAddresses[0].emailAddress
     };
@@ -138,7 +132,7 @@ export default function AddRequest() {
     }
   };
 
-  if (!isUserLoaded || !isOrgListLoaded || !isOrgLoaded) {
+  if (!isUserLoaded || loading) {
     return <div>Loading...</div>;
   }
 
@@ -178,15 +172,15 @@ export default function AddRequest() {
           <Label htmlFor="group" className="block text-sm font-medium text-gray-700 mb-1">
             Group
           </Label>
-          {organizations.length > 0 ? (
+          {groups.length > 0 ? (
             <Select onValueChange={handleGroupChange} value={group} required>
               <SelectTrigger id="group" className="w-full">
                 <SelectValue placeholder="Select a group" />
               </SelectTrigger>
               <SelectContent>
-                {organizations.map((org) => (
-                  <SelectItem key={org.id} value={org.id}>
-                    {org.name}
+                {groups.map((group) => (
+                  <SelectItem key={group.id} value={group.id}>
+                    {group.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -205,8 +199,8 @@ export default function AddRequest() {
             </SelectTrigger>
             <SelectContent>
               {members.map((member) => (
-                <SelectItem key={member.id} value={member.id}>
-                  {member.email}
+                <SelectItem key={member.user_id} value={member.user_id}>
+                  {member.user_email}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -1,6 +1,7 @@
 'use server';
 
 import { neon } from '@neondatabase/serverless';
+import { clerkClient } from '@clerk/nextjs/server';
 
 // Assumption: DATABASE_URL is configured in your environment variables.
 if (!process.env.DATABASE_URL) {
@@ -10,17 +11,32 @@ const sql = neon(process.env.DATABASE_URL);
 
 // --- INTERFACES ---
 
+export interface Group {
+  id: string; // UUID
+  name: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GroupMember {
+  group_id: string; // UUID
+  user_id: string;
+  user_email: string;
+  role: 'admin' | 'member';
+  joined_at: string;
+}
+
 export interface RequestData {
   amount: number;
   description: string;
-  groupId: string;
+  groupId: string; // UUID
   createdBy: string;
   createdByEmail: string;
   requestTo: { id: string; email: string };
 }
 
 export interface Request {
-  id: string;
+  id: string; // UUID
   amount: number;
   description: string;
   created_by: string;
@@ -46,6 +62,115 @@ export interface SettlementTransaction {
 
 
 // --- DATABASE FUNCTIONS ---
+
+/**
+ * Creates a new group and adds the creator as an admin.
+ */
+export async function createGroup(name: string, creatorId: string, creatorEmail: string) {
+  try {
+    const result = await sql`
+      WITH new_group AS (
+        INSERT INTO groups (name, created_by)
+        VALUES (${name}, ${creatorId})
+        RETURNING id
+      )
+      INSERT INTO group_members (group_id, user_id, user_email, role)
+      SELECT id, ${creatorId}, ${creatorEmail}, 'admin'
+      FROM new_group
+      RETURNING group_id
+    `;
+
+    if (!result || result.length === 0) {
+      throw new Error('Failed to create group');
+    }
+
+    return { success: true, groupId: result[0].group_id };
+  } catch (error) {
+    console.error('Error creating group:', error);
+    return { success: false, error: 'Failed to create group' };
+  }
+}
+
+/**
+ * Adds a member to a group.
+ */
+export async function addGroupMember(groupId: string, userEmail: string) {
+  try {
+    // Check if user is already a member
+    const existingMember = await sql`
+      SELECT 1 FROM group_members 
+      WHERE group_id = ${groupId}::uuid AND user_email = ${userEmail}
+    `;
+
+    if (existingMember && existingMember.length > 0) {
+      return { success: true, message: 'User is already a member' };
+    }
+
+    // Add the member to the group with a temporary user_id
+    await sql`
+      INSERT INTO group_members (group_id, user_id, user_email, role)
+      VALUES (${groupId}::uuid, ${userEmail}, ${userEmail}, 'member')
+    `;
+    return { success: true };
+  } catch (error) {
+    console.error('Error adding group member:', error);
+    return { success: false, error: 'Failed to add member to group' };
+  }
+}
+
+/**
+ * Updates a member's user ID when they log in.
+ */
+export async function updateMemberUserId(userEmail: string, userId: string) {
+  try {
+    await sql`
+      UPDATE group_members
+      SET user_id = ${userId}
+      WHERE user_email = ${userEmail} AND user_id = user_email
+    `;
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating member user ID:', error);
+    return { success: false, error: 'Failed to update member user ID' };
+  }
+}
+
+/**
+ * Gets all groups that a user is a member of.
+ */
+export async function getUserGroups(userId: string) {
+  try {
+    const groups = await sql`
+      SELECT g.* 
+      FROM groups g
+      JOIN group_members gm ON g.id = gm.group_id
+      WHERE gm.user_id = ${userId}
+      ORDER BY g.created_at DESC
+    `;
+    return { success: true, groups };
+  } catch (error) {
+    console.error('Error getting user groups:', error);
+    return { success: false, error: 'Failed to get user groups' };
+  }
+}
+
+/**
+ * Gets all members of a group.
+ */
+export async function getGroupMembers(groupId: string) {
+  try {
+    const members = await sql`
+      SELECT user_id, user_email, role
+      FROM group_members
+      WHERE group_id = ${groupId}::uuid
+      ORDER BY role DESC, joined_at ASC
+    `;
+    return { members };
+  } catch (error) {
+    console.error('Error fetching group members:', error);
+    return { members: [] };
+  }
+}
 
 /**
  * Inserts a new request record into the "requests" table using separate columns
@@ -165,12 +290,16 @@ export async function markRequestAsSettled(requestId: string, settledBy: string)
 }
 
 /**
- * Deletes a group and all its associated requests.
+ * Deletes a group and all its associated data.
  */
 export async function deleteGroup(groupId: string) {
   try {
     // First delete all requests in the group
-    await sql`DELETE FROM requests WHERE group_id = ${groupId}`;
+    await sql`DELETE FROM requests WHERE group_id = ${groupId}::uuid`;
+    // Then delete all group members
+    await sql`DELETE FROM group_members WHERE group_id = ${groupId}::uuid`;
+    // Finally delete the group
+    await sql`DELETE FROM groups WHERE id = ${groupId}::uuid`;
     return { success: true };
   } catch (error) {
     console.error('Error deleting group:', error);
@@ -216,21 +345,18 @@ async function calculateNetBalances(groupId: string): Promise<UserBalance[]> {
       if (request.status === 'pending') {
         const amount = Number(request.amount);
         
-        // Add to sender's balance (positive - they are owed money)
-        const senderBalance = balances.get(request.created_by);
-        if (senderBalance) {
-          const currentBalance = Number(senderBalance.balance);
-          senderBalance.balance = Number((currentBalance + amount).toFixed(2));
-          balances.set(request.created_by, senderBalance);
+        // When someone creates a request, they are owed money (positive balance)
+        const creatorBalance = balances.get(request.created_by);
+        if (creatorBalance) {
+          creatorBalance.balance = Number((creatorBalance.balance + amount).toFixed(2));
+          balances.set(request.created_by, creatorBalance);
         }
 
-        // Subtract from receiver's balance (negative - they owe money)
-        const receiver = request.request_to;
-        const receiverBalance = balances.get(receiver.id);
-        if (receiverBalance) {
-          const currentBalance = Number(receiverBalance.balance);
-          receiverBalance.balance = Number((currentBalance - amount).toFixed(2));
-          balances.set(receiver.id, receiverBalance);
+        // When someone is requested from, they owe money (negative balance)
+        const requestToBalance = balances.get(request.request_to.id);
+        if (requestToBalance) {
+          requestToBalance.balance = Number((requestToBalance.balance - amount).toFixed(2));
+          balances.set(request.request_to.id, requestToBalance);
         }
       }
     });
@@ -243,6 +369,9 @@ async function calculateNetBalances(groupId: string): Promise<UserBalance[]> {
         balance: data.balance
       }))
       .filter(user => Math.abs(user.balance) > 0.01);
+
+    // Sort by balance to ensure consistent order
+    result.sort((a, b) => b.balance - a.balance);
 
     console.log('Final balances:', result);
     return result;
@@ -265,57 +394,34 @@ export async function getOptimizedSettlements(groupId: string): Promise<Settleme
 
     const transactions: SettlementTransaction[] = [];
 
-    // Create priority queues for debtors and creditors
-    const debtors = balances
-      .filter(user => user.balance < 0)
-      .sort((a, b) => a.balance - b.balance);
+    // Separate debtors and creditors
+    const debtors = balances.filter(user => user.balance < 0);
+    const creditors = balances.filter(user => user.balance > 0);
 
-    const creditors = balances
-      .filter(user => user.balance > 0)
-      .sort((a, b) => b.balance - a.balance);
+    // For each debtor, find a creditor to settle with
+    for (const debtor of debtors) {
+      const debtAmount = Math.abs(debtor.balance);
+      let remainingDebt = debtAmount;
 
-    if (debtors.length === 0 || creditors.length === 0) {
-      return [];
-    }
+      for (const creditor of creditors) {
+        if (remainingDebt <= 0.01) break;
+        if (creditor.balance <= 0.01) continue;
+        if (debtor.userId === creditor.userId) continue;
 
-    let debtorIndex = 0;
-    let creditorIndex = 0;
+        const amount = Math.min(remainingDebt, creditor.balance);
+        if (amount > 0.01) {
+          transactions.push({
+            from: { id: debtor.userId, email: debtor.userEmail },
+            to: { id: creditor.userId, email: creditor.userEmail },
+            amount: Number(amount.toFixed(2))
+          });
 
-    while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
-      const debtor = debtors[debtorIndex];
-      const creditor = creditors[creditorIndex];
-
-      const amount = Math.min(
-        Math.abs(debtor.balance),
-        creditor.balance
-      );
-
-      if (amount > 0.01) {
-        transactions.push({
-          from: { id: debtor.userId, email: debtor.userEmail },
-          to: { id: creditor.userId, email: creditor.userEmail },
-          amount: Number(amount.toFixed(2))
-        });
-
-        // Update balances
-        debtor.balance = Number((debtor.balance + amount).toFixed(2));
-        creditor.balance = Number((creditor.balance - amount).toFixed(2));
-
-        // Move to next debtor or creditor if their balance is settled
-        if (Math.abs(debtor.balance) < 0.01) {
-          debtorIndex++;
+          remainingDebt = Number((remainingDebt - amount).toFixed(2));
+          creditor.balance = Number((creditor.balance - amount).toFixed(2));
         }
-        if (Math.abs(creditor.balance) < 0.01) {
-          creditorIndex++;
-        }
-      } else {
-        // If amount is too small, move to next pair
-        debtorIndex++;
-        creditorIndex++;
       }
     }
 
-    console.log('Final transactions:', transactions);
     return transactions;
   } catch (error) {
     console.error('Error in getOptimizedSettlements:', error);
@@ -344,5 +450,85 @@ export async function deleteOrganization(organizationId: string) {
   } catch (error) {
     console.error('Error deleting organization:', error);
     return { success: false, error: 'Failed to delete organization' };
+  }
+}
+
+/**
+ * Stores a settlement transaction in the database.
+ */
+export async function storeSettlement(groupId: string, fromId: string, toId: string, amount: number) {
+  try {
+    await sql`
+      INSERT INTO settlements (
+        group_id, from_user_id, to_user_id, amount, status, created_at
+      )
+      VALUES (
+        ${groupId}::uuid,
+        ${fromId},
+        ${toId},
+        ${amount},
+        'pending',
+        CURRENT_TIMESTAMP
+      )
+    `;
+    return { success: true };
+  } catch (error) {
+    console.error('Error storing settlement:', error);
+    return { success: false, error: 'Failed to store settlement' };
+  }
+}
+
+/**
+ * Gets all settlements for a group.
+ */
+export async function getGroupSettlements(groupId: string) {
+  try {
+    const settlements = await sql`
+      SELECT 
+        s.*,
+        from_user.user_email as from_email,
+        to_user.user_email as to_email
+      FROM settlements s
+      JOIN group_members from_user ON s.from_user_id = from_user.user_id
+      JOIN group_members to_user ON s.to_user_id = to_user.user_id
+      WHERE s.group_id = ${groupId}::uuid
+      ORDER BY s.created_at DESC
+    `;
+    return { success: true, settlements };
+  } catch (error) {
+    console.error('Error getting settlements:', error);
+    return { success: false, error: 'Failed to get settlements' };
+  }
+}
+
+/**
+ * Marks a settlement as completed.
+ */
+export async function markSettlementAsCompleted(
+  groupId: string,
+  fromId: string,
+  toId: string,
+  amount: number
+) {
+  try {
+    // Find and mark the corresponding requests as settled
+    const { requests } = await getGroupRequests(groupId);
+    const pendingRequests = requests.filter(req => req.status === 'pending');
+    
+    let remainingAmount = amount;
+    for (const request of pendingRequests) {
+      if (remainingAmount <= 0) break;
+      
+      if (request.created_by === toId && request.request_to.id === fromId) {
+        const settleAmount = Math.min(remainingAmount, request.amount);
+        await markRequestAsSettled(request.id, fromId);
+        remainingAmount -= settleAmount;
+      }
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error marking settlement as completed:', error);
+    return { success: false, error: 'Failed to mark settlement as completed' };
   }
 }
