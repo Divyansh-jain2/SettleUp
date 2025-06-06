@@ -197,27 +197,50 @@ function GroupPage() {
 
       <h2 className="text-2xl font-semibold mb-4">Optimized Settlements</h2>
       {settlements.length > 0 ? (
-        settlements.map((settlement, index) => (
-          <Card key={index} className="mb-4">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
+        <>
+          <div className="flex justify-between items-center mb-4">
+            <p className="text-gray-600">Here's how to settle all debts:</p>
+            <Button
+              onClick={async () => {
+                if (!user) return;
+                try {
+                  // Get all pending requests
+                  const { requests } = await getGroupRequests(id as string);
+                  const pendingRequests = requests.filter(req => req.status === 'pending');
+                  
+                  // Mark all pending requests as settled
+                  for (const request of pendingRequests) {
+                    await markRequestAsSettled(request.id, user.id);
+                  }
+
+                  // Refresh the data
+                  const { requests: updatedRequests } = await getGroupRequests(id as string);
+                  setRequests(updatedRequests);
+                  const optimizedSettlements = await getOptimizedSettlements(id as string);
+                  setSettlements(optimizedSettlements);
+                  toast.success('All requests marked as settled');
+                } catch (error) {
+                  console.error('Error marking all as settled:', error);
+                  toast.error('Failed to mark all as settled');
+                }
+              }}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              Mark All as Settled
+            </Button>
+          </div>
+          {settlements.map((settlement, index) => (
+            <Card key={index} className="mb-4">
+              <CardContent className="p-6">
                 <p className="text-lg">
                   <span className="font-semibold">{settlement.from.email}</span> should pay{' '}
                   <span className="font-semibold">₹{formatAmount(settlement.amount)}</span> to{' '}
                   <span className="font-semibold">{settlement.to.email}</span>
                 </p>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleMarkSettlementAsCompleted(settlement)}
-                  className="text-green-600 hover:text-green-700"
-                >
-                  <CheckCircle2 size={20} />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))
+              </CardContent>
+            </Card>
+          ))}
+        </>
       ) : (
         <p className="text-gray-600 mb-8">No settlements needed. All debts are balanced.</p>
       )}
