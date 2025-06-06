@@ -1,5 +1,9 @@
 'use client';
 
+import { useOrganization, useOrganizationList, useUser } from '@clerk/nextjs';
+import React, { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
+import { addRequest } from '../actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,10 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useOrganization, useOrganizationList, useUser } from '@clerk/nextjs';
-import React, { useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
-import { addExpense } from '../actions';
 
 interface Organization {
   id: string;
@@ -23,26 +23,19 @@ interface Organization {
 interface Member {
   id: string;
   name: string;
+  email: string;
 }
 
-interface SplitMember {
-  id: string;
-  name: string;
-}
-
-export default function AddExpense() {
+export default function AddRequest() {
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [group, setGroup] = useState('');
-  const [splitPercentage, setSplitPercentage] = useState('');
-  const [splitWith, setSplitWith] = useState<SplitMember[]>([]);
+  const [requestTo, setRequestTo] = useState<Member | null>(null);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
 
   const { user, isLoaded: isUserLoaded } = useUser();
-  const { userMemberships, isLoaded: isOrgListLoaded } = useOrganizationList({
-    userMemberships: true,
-  });
+  const { userMemberships, isLoaded: isOrgListLoaded } = useOrganizationList({ userMemberships: true });
   const { isLoaded: isOrgLoaded } = useOrganization();
 
   useEffect(() => {
@@ -51,34 +44,29 @@ export default function AddExpense() {
         id: membership.organization.id,
         name: membership.organization.name,
       }));
-      console.log('Organizations fetched:', orgs);
       setOrganizations(orgs);
-
-      // Set the first organization as default and fetch its members
       if (orgs.length > 0 && !group) {
         const defaultOrgId = orgs[0].id;
         setGroup(defaultOrgId);
         fetchMembers(defaultOrgId);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOrgListLoaded, userMemberships.data, group]);
 
   const fetchMembers = async (orgId: string) => {
     try {
-      const org = await userMemberships.data?.find(
+      const org = userMemberships.data?.find(
         (membership) => membership.organization.id === orgId
       )?.organization;
       if (org) {
         const memberships = await org.getMemberships();
         const membersList = memberships.data.map((membership) => ({
           id: membership.publicUserData?.userId ?? '',
-          name: `${membership.publicUserData?.firstName ?? ''} ${
-            membership.publicUserData?.lastName ?? ''
-          }`.trim(),
+          name: `${membership.publicUserData?.firstName ?? ''} ${membership.publicUserData?.lastName ?? ''}`.trim(),
+          email: membership.publicUserData?.identifier ?? '',
         }));
+        console.log('Fetched members:', membersList); // Debug log
         setMembers(membersList);
-        console.log('Members fetched:', membersList);
       }
     } catch (error) {
       console.error('Error fetching members:', error);
@@ -89,46 +77,64 @@ export default function AddExpense() {
   const handleGroupChange = (orgId: string) => {
     setGroup(orgId);
     fetchMembers(orgId);
-    setSplitWith([]); // Reset split with when group changes
+    setRequestTo(null);
+  };
+
+  const handleRequestToSelect = (value: string) => {
+    const selectedMember = members.find((member) => member.id === value);
+    if (selectedMember) {
+      setRequestTo(selectedMember);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!isUserLoaded || !user) {
-      toast.error("Oops! 😅 You need to be logged in to add an expense. Let's get you signed in!");
+      toast.error("You need to be logged in to make a request.");
+      return;
+    }
+    if (!requestTo) {
+      toast.error("Please select a user to request from.");
       return;
     }
 
-    const expenseData = {
+    if (!amount || parseFloat(amount) <= 0) {
+      toast.error("Please enter a valid amount greater than 0.");
+      return;
+    }
+
+    if (!user.emailAddresses?.[0]?.emailAddress) {
+      toast.error("Your email address is not available. Please update your profile.");
+      return;
+    }
+
+    const requestData = {
       amount: parseFloat(amount),
       description,
       groupId: group,
-      splitPercentage: parseFloat(splitPercentage),
-      splitWith: splitWith.map((member) => ({
-        id: member.id,
-        name: member.name,
-      })),
       createdBy: user.id,
+      requestTo: { 
+        id: requestTo.id, 
+        email: requestTo.email 
+      },
+      createdByEmail: user.emailAddresses[0].emailAddress
     };
 
     try {
-      const result = await addExpense(expenseData);
-      console.log('AddExpense result:', result);
+      console.log('Submitting request with data:', requestData);
+      const result = await addRequest(requestData);
       if (result.success) {
-        toast.success('🎉 Expense Added! Your expense has been successfully recorded. Great job!');
-
-        // Reset form
+        toast.success('Request sent successfully!');
         setAmount('');
         setDescription('');
-        setGroup('');
-        setSplitPercentage('');
-        setSplitWith([]);
+        setRequestTo(null);
       } else {
-        throw new Error('Failed to add expense');
+        console.error('Failed to add request:', result.error);
+        toast.error(result.error || "Failed to send request. Please try again.");
       }
-    } catch (error: unknown) {
-      console.error('Error adding expense:', error);
-      toast.error("😟 Uh-oh! We couldn't add your expense. Let's give it another try!");
+    } catch (error) {
+      console.error('Error in handleSubmit:', error);
+      toast.error("An unexpected error occurred while sending your request.");
     }
   };
 
@@ -138,52 +144,38 @@ export default function AddExpense() {
 
   return (
     <div className="container mx-auto px-4 py-8 sm:px-6 lg:px-8 max-w-2xl">
-      <h1 className="text-2xl font-bold mb-2">Add an expense</h1>
-      <p className="text-gray-600 mb-6">
-        Record your expenses and split them with your group.
-      </p>
-
+      <h1 className="text-2xl font-bold mb-2">Make a Request</h1>
+      <p className="text-gray-600 mb-6">Request money from a group member.</p>
       <form onSubmit={handleSubmit} className="space-y-6">
         <div>
-          <Label
-            htmlFor="amount"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
+          <Label htmlFor="amount" className="block text-sm font-medium text-gray-700 mb-1">
             Amount
           </Label>
           <Input
             id="amount"
             type="number"
-            placeholder="$0.00"
+            placeholder="₹0.00"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             required
             className="w-full"
           />
         </div>
-
         <div>
-          <Label
-            htmlFor="description"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
+          <Label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">
             Description
           </Label>
           <Input
             id="description"
-            placeholder="What did you pay for?"
+            placeholder="Enter a brief description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             required
             className="w-full"
           />
         </div>
-
         <div>
-          <Label
-            htmlFor="group"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
+          <Label htmlFor="group" className="block text-sm font-medium text-gray-700 mb-1">
             Group
           </Label>
           {organizations.length > 0 ? (
@@ -200,104 +192,28 @@ export default function AddExpense() {
               </SelectContent>
             </Select>
           ) : (
-            <p className="text-sm text-gray-500">
-              No groups available. Please create or join a group first.
-            </p>
+            <p className="text-sm text-gray-500">No groups available. Please create or join a group first.</p>
           )}
         </div>
-
         <div>
-          <Label
-            htmlFor="splitPercentage"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
-            Split Percentage
+          <Label htmlFor="requestTo" className="block text-sm font-medium text-gray-700 mb-1">
+            Request From
           </Label>
-          <Input
-            id="splitPercentage"
-            type="number"
-            placeholder="Enter percentage to split"
-            value={splitPercentage}
-            onChange={(e) => setSplitPercentage(e.target.value)}
-            className="w-full"
-          />
-        </div>
-
-        <div>
-          <Label
-            htmlFor="splitWith"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
-            Split with
-          </Label>
-          <Select
-            onValueChange={(value) => {
-              const selectedMember = members.find(
-                (member) => member.id === value
-              );
-              if (selectedMember) {
-                if (
-                  splitWith.some((member) => member.id === selectedMember.id)
-                ) {
-                  setSplitWith(
-                    splitWith.filter(
-                      (member) => member.id !== selectedMember.id
-                    )
-                  );
-                } else {
-                  setSplitWith([
-                    ...splitWith,
-                    { id: selectedMember.id, name: selectedMember.name },
-                  ]);
-                }
-              }
-            }}
-            disabled={!group}
-          >
-            <SelectTrigger id="splitWith" className="w-full">
-              <SelectValue placeholder="Select members to split with" />
+          <Select onValueChange={handleRequestToSelect} disabled={!group}>
+            <SelectTrigger id="requestTo" className="w-full">
+              <SelectValue placeholder="Select a member" />
             </SelectTrigger>
             <SelectContent>
               {members.map((member) => (
                 <SelectItem key={member.id} value={member.id}>
-                  {member.name}
+                  {member.email}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
-
-        {splitWith.length > 0 && (
-          <div>
-            <Label className="block text-sm font-medium text-gray-700 mb-2">
-              Selected Members
-            </Label>
-            <div className="flex flex-wrap gap-2">
-              {splitWith.map((member) => (
-                <span
-                  key={member.id}
-                  className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-blue-100 text-blue-800"
-                >
-                  {member.name}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSplitWith(
-                        splitWith.filter((m) => m.id !== member.id)
-                      )
-                    }
-                    className="ml-2 text-blue-600 hover:text-blue-800"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
         <Button type="submit" className="w-full">
-          Save Expense
+          Send Request
         </Button>
       </form>
     </div>

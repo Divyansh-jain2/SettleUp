@@ -2,82 +2,37 @@
 
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Trash2 } from 'lucide-react';
+import { Trash2, CheckCircle2 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
-import { useOrganizationList, useUser } from '@clerk/nextjs';
-import { getGroupData, deleteExpense } from '@/app/actions';
+import { useOrganizationList, useUser, useOrganization } from '@clerk/nextjs';
+import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, deleteOrganization } from '@/app/actions';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
 
-interface Balance {
-  id: string;
-  name: string;
-  amount: number;
-  owes: boolean;
-}
-
-interface Expense {
-  id: string;
-  amount: number;
-  description: string;
-  created_by: string;
-  split_with: {
-    id: string;
-    name: string;
-    splitAmount: number;
-  }[];
-}
-
 const formatAmount = (amount: number | string) => {
-  const numAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
-  return numAmount.toFixed(2);
-};
-
-/* 
-  getColorForUser returns a deterministic background color class
-  based on a provided string (typically a user id).
-*/
-const getColorForUser = (str: string): string => {
-  const colors = ['bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-red-500', 'bg-purple-500'];
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const index = Math.abs(hash) % colors.length;
-  return colors[index];
-};
-
-const getInitials = (name: string): string => {
-  return name
-    .split(' ')
-    .map((word) => word[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+  return num.toFixed(2);
 };
 
 function GroupPage() {
-  // All hooks are now called unconditionally
   const { id } = useParams();
   const { userMemberships, isLoaded: orgLoaded } = useOrganizationList({ userMemberships: { infinite: true } });
   const { user, isLoaded: userLoaded } = useUser();
+  const { organization } = useOrganization();
   const router = useRouter();
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [balances, setBalances] = useState<Balance[]>([]);
+  const [requests, setRequests] = useState<ActionRequest[]>([]);
+  const [settlements, setSettlements] = useState<SettlementTransaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Use effect to fetch group data once all hooks are loaded
   useEffect(() => {
     async function fetchData() {
       if (id && user) {
-        const { expenses, balances } = await getGroupData(
-          id as string,
-          user.id,
-          user.fullName || 'You'
-        );
-        setExpenses(expenses);
-        setBalances(balances);
+        console.log('Fetching data for group:', id);
+        const { requests } = await getGroupRequests(id as string);
+        setRequests(requests);
+        const optimizedSettlements = await getOptimizedSettlements(id as string);
+        setSettlements(optimizedSettlements);
         setLoading(false);
       }
     }
@@ -86,7 +41,6 @@ function GroupPage() {
     }
   }, [id, user, userLoaded]);
 
-  // Render fallback UI if user/org data are loading or user is not logged in
   if (!userLoaded || !orgLoaded || loading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -95,7 +49,6 @@ function GroupPage() {
     );
   }
 
-  // Even if userLoaded is true, user could be null so render a message.
   if (!user) {
     return <div>You must be logged in to view this page.</div>;
   }
@@ -105,30 +58,80 @@ function GroupPage() {
   );
 
   if (!selectedOrganization) {
-    return <div>Organization not found</div>;
+    return (
+      <div className="flex flex-col items-center justify-center h-screen">
+        <h1 className="text-2xl font-bold text-red-600 mb-4">Organization not found</h1>
+        <p className="text-gray-600 mb-4">You might not have access to this organization or it doesn't exist.</p>
+        <Link href="/groups">
+          <Button className="bg-purple-600 text-white px-4 py-2 rounded-md">
+            Back to Groups
+          </Button>
+        </Link>
+      </div>
+    );
   }
 
   const isAdmin = selectedOrganization.role === 'org:admin';
-  const groupDescription =
-    "View and manage the details of your group. You can see the group's name, balances, and expenses. As an admin, you can also delete expenses.";
 
-  const handleDeleteExpense = async (expenseId: string) => {
+  const handleDeleteRequest = async (requestId: string) => {
     if (!isAdmin) {
-      toast.error('Only admins can delete expenses. 🚫');
+      toast.error('Only admins can delete requests.');
+      return;
+    }
+    const confirmed = window.confirm('Are you sure you want to delete this request?');
+    if (confirmed) {
+      const result = await deleteRequest(requestId);
+      if (result.success) {
+        const { requests: updatedRequests } = await getGroupRequests(id as string);
+        setRequests(updatedRequests);
+        router.refresh();
+      } else {
+        toast.error('Failed to delete request. Please try again.');
+      }
+    }
+  };
+
+  const handleMarkAsSettled = async (requestId: string) => {
+    if (!user) return;
+    
+    const result = await markRequestAsSettled(requestId, user.id);
+    if (result.success) {
+      const { requests: updatedRequests } = await getGroupRequests(id as string);
+      setRequests(updatedRequests);
+      const optimizedSettlements = await getOptimizedSettlements(id as string);
+      setSettlements(optimizedSettlements);
+      toast.success('Request marked as settled');
+    } else {
+      toast.error('Failed to mark request as settled');
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!isAdmin) {
+      toast.error('Only admins can delete groups.');
       return;
     }
 
-    const confirmed = window.confirm('Are you sure you want to delete this expense?');
+    const confirmed = window.confirm('Are you sure you want to delete this group? This will delete all requests in the group and cannot be undone.');
     if (confirmed) {
-      const result = await deleteExpense(expenseId);
-      if (result.success) {
-        const { expenses: updatedExpenses, balances: updatedBalances } =
-          await getGroupData(id as string, user.id, user.fullName || 'You');
-        setExpenses(updatedExpenses);
-        setBalances(updatedBalances);
-        router.refresh();
-      } else {
-        toast.error('Failed to delete expense. Please try again.');
+      try {
+        // First delete all requests in the group
+        const deleteRequestsResult = await deleteGroup(id as string);
+        if (!deleteRequestsResult.success) {
+          throw new Error('Failed to delete group requests');
+        }
+
+        // Then delete the organization
+        const deleteOrgResult = await deleteOrganization(id as string);
+        if (!deleteOrgResult.success) {
+          throw new Error('Failed to delete organization');
+        }
+
+        toast.success('Group deleted successfully');
+        router.push('/groups');
+      } catch (error) {
+        console.error('Error deleting group:', error);
+        toast.error('Failed to delete group. Please try again.');
       }
     }
   };
@@ -139,75 +142,82 @@ function GroupPage() {
         <h1 className="text-3xl font-bold mb-4">
           {selectedOrganization.organization.name}
         </h1>
-        <Link href="/groups">
-          <Button className="bg-purple-600 text-white px-4 py-2 rounded-md">
-            All Groups
-          </Button>
-        </Link>
+        <div className="flex gap-2">
+          {isAdmin && (
+            <Button 
+              variant="destructive" 
+              onClick={handleDeleteGroup}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              Delete Group
+            </Button>
+          )}
+          <Link href="/groups">
+            <Button className="bg-purple-600 text-white px-4 py-2 rounded-md">
+              All Groups
+            </Button>
+          </Link>
+        </div>
       </div>
 
-      <p className="text-gray-600 mb-8">{groupDescription}</p>
-
-      <h2 className="text-2xl font-semibold mb-4">Balances</h2>
-      {balances.length > 0 ? (
-        balances.map((balance) => (
-          <Card key={balance.id} className="mb-8">
-            <CardContent className="flex items-center p-6">
-              <div
-                className={`h-10 w-10 ${getColorForUser(balance.id)} rounded-full mr-4 flex items-center justify-center text-white font-semibold`}
-              >
-                {getInitials(balance.name)}
-              </div>
-              <div>
-                <h3 className="font-semibold">{balance.name}</h3>
-                <p className="text-sm text-gray-600">
-                  Owes you ${formatAmount(balance.amount)}
-                </p>
-              </div>
+      <h2 className="text-2xl font-semibold mb-4">Optimized Settlements</h2>
+      {settlements.length > 0 ? (
+        settlements.map((settlement, index) => (
+          <Card key={index} className="mb-4">
+            <CardContent className="p-6">
+              <p className="text-lg">
+                <span className="font-semibold">{settlement.from.email}</span> should pay{' '}
+                <span className="font-semibold">₹{formatAmount(settlement.amount)}</span> to{' '}
+                <span className="font-semibold">{settlement.to.email}</span>
+              </p>
             </CardContent>
           </Card>
         ))
       ) : (
-        <p className="text-gray-600 mb-8">
-          🌟 No outstanding balances. Everyone&apos;s all squared up! 🎉
-        </p>
+        <p className="text-gray-600 mb-8">No settlements needed. All debts are balanced.</p>
       )}
 
-      <h2 className="text-2xl font-semibold mb-4">Expenses</h2>
-      {expenses.length > 0 ? (
-        expenses.map((expense) => (
-          <Card key={expense.id} className="mb-4">
+      <h2 className="text-2xl font-semibold mb-4 mt-8">Requests</h2>
+      {requests.length > 0 ? (
+        requests.map((req) => (
+          <Card key={req.id} className="mb-4">
             <CardContent className="flex items-center justify-between p-6">
-              <div className="flex items-center">
-                <div
-                  className={`h-10 w-10 ${getColorForUser(expense.created_by)} rounded-full mr-4 flex items-center justify-center text-white font-semibold`}
-                >
-                  {getInitials(expense.description)}
-                </div>
-                <div>
-                  <h3 className="font-semibold">{expense.description}</h3>
-                  <p className="text-sm text-gray-600">
-                    ${formatAmount(expense.amount)} ·{' '}
-                    {expense.split_with.map((s) => s.name).join(', ')}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    Split type: Percentage{' '}
-                    {((expense.split_with[0]?.splitAmount / expense.amount) * 100).toFixed(2)}%
-                  </p>
-                </div>
+              <div>
+                <h3 className="font-semibold">{req.description}</h3>
+                <p className="text-sm text-gray-600">
+                  Amount: ₹{formatAmount(req.amount)} | Created by: {req.created_by_email} | Request To: {req.request_to.email}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">
+                  Status: <span className={req.status === 'settled' ? 'text-green-600' : 'text-yellow-600'}>
+                    {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
+                  </span>
+                  {req.settled_at && ` • Settled on ${new Date(req.settled_at).toLocaleDateString()}`}
+                </p>
               </div>
-              <Trash2
-                className="text-red-500 cursor-pointer"
-                size={20}
-                onClick={() => handleDeleteExpense(expense.id)}
-              />
+              <div className="flex items-center gap-2">
+                {req.status === 'pending' && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleMarkAsSettled(req.id)}
+                    className="text-green-600 hover:text-green-700"
+                  >
+                    <CheckCircle2 size={20} />
+                  </Button>
+                )}
+                {isAdmin && (
+                  <Trash2
+                    className="text-red-500 cursor-pointer"
+                    size={20}
+                    onClick={() => handleDeleteRequest(req.id)}
+                  />
+                )}
+              </div>
             </CardContent>
           </Card>
         ))
       ) : (
-        <p className="text-gray-600 mb-8">
-          💸 No expenses yet. Time to split some bills! 🧾
-        </p>
+        <p className="text-gray-600 mb-8">No requests found in this group.</p>
       )}
     </div>
   );

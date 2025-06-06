@@ -14,7 +14,7 @@ export default function CreateGroup() {
   const [invitedMembers, setInvitedMembers] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const { user } = useUser();
-  const { createOrganization } = useOrganizationList();
+  const { createOrganization, userMemberships } = useOrganizationList();
   const router = useRouter();
 
   const handleCreateGroup = async (e: React.FormEvent) => {
@@ -31,17 +31,39 @@ export default function CreateGroup() {
       }
       const organization = await createOrganization({ name: groupName });
 
-      // Invite members
+      // Invite members individually and catch errors for already existing members.
       for (const email of invitedMembers) {
-        await organization.inviteMember({
-          emailAddress: email,
-          role: 'org:member',
-        });
+        try {
+          await organization.inviteMember({
+            emailAddress: email,
+            role: 'org:member',
+          });
+        } catch (inviteError: any) {
+          if (
+            inviteError?.message &&
+            inviteError.message.includes('is already a member')
+          ) {
+            console.info(`${email} is already a member, skipping invite.`);
+          } else {
+            console.error('Error inviting member:', inviteError);
+            toast.error(`Failed to invite ${email}.`);
+          }
+        }
+      }
+
+      // Wait for the organization list to be refreshed
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Verify that the organization exists in the user's memberships
+      const orgExists = userMemberships.data?.some(
+        membership => membership.organization.id === organization.id
+      );
+
+      if (!orgExists) {
+        throw new Error('Organization not found in user memberships');
       }
 
       toast.success('Group created successfully!');
-
-      // Redirect to the new group page
       router.push(`/group/${organization.id}`);
     } catch (error) {
       console.error('Error creating group:', error);

@@ -7,8 +7,8 @@ import { Toaster } from 'react-hot-toast';
 const montserrat = Montserrat({ subsets: ['latin'] });
 
 export const metadata = {
-  title: 'SplitUp',
-  description: 'SplitUp your expenses with your friends',
+  title: 'SettleUp',
+  description: 'SettleUp your expenses with your friends',
 };
 
 export default function RootLayout({
