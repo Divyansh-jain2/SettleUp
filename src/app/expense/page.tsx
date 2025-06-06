@@ -61,7 +61,8 @@ export default function AddRequest() {
   const fetchMembers = async (groupId: string) => {
     try {
       const { members } = await getGroupMembers(groupId);
-      setMembers(members as Member[]);
+      const filteredMembers = members.filter(member => member.user_id !== user?.id);
+      setMembers(filteredMembers as Member[]);
     } catch (error) {
       console.error('Error fetching members:', error);
       toast.error('Failed to fetch group members');
@@ -198,15 +199,21 @@ export default function AddRequest() {
               <SelectValue placeholder="Select a member" />
             </SelectTrigger>
             <SelectContent>
-              {members.map((member) => (
-                <SelectItem key={member.user_id} value={member.user_id}>
-                  {member.user_email}
+              {members.length > 0 ? (
+                members.map((member) => (
+                  <SelectItem key={member.user_id} value={member.user_id}>
+                    {member.user_email}
+                  </SelectItem>
+                ))
+              ) : (
+                <SelectItem value="no-members" disabled>
+                  No other members in this group
                 </SelectItem>
-              ))}
+              )}
             </SelectContent>
           </Select>
         </div>
-        <Button type="submit" className="w-full">
+        <Button type="submit" className="w-full" disabled={members.length === 0}>
           Send Request
         </Button>
       </form>

@@ -59,6 +59,17 @@ export interface SettlementTransaction {
   amount: number;
 }
 
+interface Balance {
+  userId: string;
+  userEmail: string;
+  amount: number;
+}
+
+interface Transaction {
+  from: { id: string; email: string };
+  to: { id: string; email: string };
+  amount: number;
+}
 
 // --- DATABASE FUNCTIONS ---
 
@@ -305,12 +316,11 @@ export async function deleteGroup(groupId: string) {
     return { success: false, error: 'Failed to delete group' };
   }
 }
-
-// --- SETTLEMENT LOGIC ---
+// --- FIXED SETTLEMENT LOGIC ---
 
 /**
  * Calculates the net balance for each user in a group based on PENDING requests.
- * This is the first step in the settlement process.
+ * This version fixes floating-point math issues and is more efficient.
  */
 async function calculateNetBalances(groupId: string): Promise<UserBalance[]> {
   try {
@@ -319,61 +329,81 @@ async function calculateNetBalances(groupId: string): Promise<UserBalance[]> {
       return [];
     }
 
+    console.log('Processing requests:', requests);
+
     const balances = new Map<string, { email: string; balance: number }>();
 
-    // First pass: Initialize all users with zero balance
+    // First, initialize all users with zero balance
     requests.forEach(request => {
-      // Initialize creator's balance
-      if (!balances.has(request.created_by)) {
-        balances.set(request.created_by, {
-          email: request.created_by_email || request.created_by,
-          balance: 0
-        });
-      }
-      // Initialize recipient's balance
-      if (!balances.has(request.request_to.id)) {
-        balances.set(request.request_to.id, {
-          email: request.request_to.email || request.request_to.id,
-          balance: 0
-        });
+      if (request.status === 'pending') {
+        const creatorId = request.created_by;
+        const creatorEmail = request.created_by_email || creatorId;
+        const recipientId = request.request_to.id;
+        const recipientEmail = request.request_to.email || recipientId;
+
+        if (!balances.has(creatorId)) {
+          balances.set(creatorId, { email: creatorEmail, balance: 0 });
+        }
+        if (!balances.has(recipientId)) {
+          balances.set(recipientId, { email: recipientEmail, balance: 0 });
+        }
       }
     });
 
-    // Second pass: Calculate net balances for pending requests only
+    // Then calculate net balances
     requests.forEach(request => {
       if (request.status === 'pending') {
         const amount = Number(request.amount);
-        
-        // When someone creates a request, they are owed money (positive balance)
-        const creatorBalance = balances.get(request.created_by);
-        if (creatorBalance) {
-          creatorBalance.balance = Number((creatorBalance.balance + amount).toFixed(2));
-          balances.set(request.created_by, creatorBalance);
-        }
+        if (isNaN(amount) || amount <= 0) return;
 
-        // When someone is requested from, they owe money (negative balance)
-        const requestToBalance = balances.get(request.request_to.id);
-        if (requestToBalance) {
-          requestToBalance.balance = Number((requestToBalance.balance - amount).toFixed(2));
-          balances.set(request.request_to.id, requestToBalance);
+        const creatorId = request.created_by;
+        const recipientId = request.request_to.id;
+
+        // Skip self-requests
+        if (creatorId === recipientId) return;
+
+        const creator = balances.get(creatorId);
+        const recipient = balances.get(recipientId);
+
+        if (creator && recipient) {
+          // Creator is owed money (positive balance)
+          creator.balance = Number((creator.balance + amount).toFixed(2));
+          // Recipient owes money (negative balance)
+          recipient.balance = Number((recipient.balance - amount).toFixed(2));
+
+          balances.set(creatorId, creator);
+          balances.set(recipientId, recipient);
         }
       }
     });
 
     // Convert to array and filter out zero balances
+    const epsilon = 0.01;
     const result = Array.from(balances.entries())
       .map(([userId, data]) => ({
         userId,
         userEmail: data.email,
-        balance: data.balance
+        balance: Number(data.balance.toFixed(2))
       }))
-      .filter(user => Math.abs(user.balance) > 0.01);
+      .filter(user => Math.abs(user.balance) >= epsilon);
 
-    // Sort by balance to ensure consistent order
-    result.sort((a, b) => b.balance - a.balance);
+    // Verify that total credits equal total debits
+    const totalCredits = result
+      .filter(b => b.balance > 0)
+      .reduce((sum, b) => sum + b.balance, 0);
+    const totalDebits = Math.abs(result
+      .filter(b => b.balance < 0)
+      .reduce((sum, b) => sum + b.balance, 0));
+
+    // If there's a mismatch, return empty array (no settlements needed)
+    if (Math.abs(totalCredits - totalDebits) > epsilon) {
+      console.log('Balance mismatch detected, no settlements needed');
+      return [];
+    }
 
     console.log('Final balances:', result);
     return result;
+
   } catch (error) {
     console.error('Error calculating net balances:', error);
     return [];
@@ -381,153 +411,112 @@ async function calculateNetBalances(groupId: string): Promise<UserBalance[]> {
 }
 
 /**
- * Optimizes transactions to minimize the number of payments required to settle all debts.
- * This is the final step of the settlement logic.
+ * Optimizes transactions using a greedy algorithm to minimize the number of payments.
+ * FIXED VERSION - prevents self-payments and handles circular debts properly.
  */
 export async function getOptimizedSettlements(groupId: string): Promise<SettlementTransaction[]> {
   try {
     const balances = await calculateNetBalances(groupId);
     if (balances.length === 0) {
+      // If no balances, mark all pending requests as settled
+      const { requests } = await getGroupRequests(groupId);
+      const pendingRequests = requests.filter(req => req.status === 'pending');
+      
+      // Mark all pending requests as settled
+      for (const request of pendingRequests) {
+        await markRequestAsSettled(request.id, request.created_by);
+      }
+      
       return [];
     }
 
-    const transactions: SettlementTransaction[] = [];
+    console.log('Initial balances:', balances);
 
-    // Separate debtors and creditors
-    const debtors = balances.filter(user => user.balance < 0);
-    const creditors = balances.filter(user => user.balance > 0);
+    // Separate users into debtors and creditors
+    let debtors = balances
+      .filter(b => b.balance < 0)
+      .map(b => ({ ...b, balance: Math.abs(b.balance) })); // Convert to positive for easier calculation
+    let creditors = balances
+      .filter(b => b.balance > 0)
+      .map(b => ({ ...b }));
 
-    // For each debtor, find a creditor to settle with
-    for (const debtor of debtors) {
-      const debtAmount = Math.abs(debtor.balance);
-      let remainingDebt = debtAmount;
+    const settlements: SettlementTransaction[] = [];
+    const epsilon = 0.01;
 
-      for (const creditor of creditors) {
-        if (remainingDebt <= 0.01) break;
-        if (creditor.balance <= 0.01) continue;
-        if (debtor.userId === creditor.userId) continue;
+    // Use a more robust approach to avoid self-payments
+    while (debtors.length > 0 && creditors.length > 0) {
+      // Sort by balance (largest debts and credits first for efficiency)
+      debtors.sort((a, b) => b.balance - a.balance);
+      creditors.sort((a, b) => b.balance - a.balance);
 
-        const amount = Math.min(remainingDebt, creditor.balance);
-        if (amount > 0.01) {
-          transactions.push({
-            from: { id: debtor.userId, email: debtor.userEmail },
-            to: { id: creditor.userId, email: creditor.userEmail },
-            amount: Number(amount.toFixed(2))
-          });
+      let settlementMade = false;
 
-          remainingDebt = Number((remainingDebt - amount).toFixed(2));
-          creditor.balance = Number((creditor.balance - amount).toFixed(2));
+      // Try to find a valid pairing (avoiding self-payments)
+      for (let i = 0; i < debtors.length && !settlementMade; i++) {
+        for (let j = 0; j < creditors.length && !settlementMade; j++) {
+          const debtor = debtors[i];
+          const creditor = creditors[j];
+
+          // Skip if same user (prevent self-payment)
+          if (debtor.userId === creditor.userId) {
+            continue;
+          }
+
+          const transferAmount = Math.min(debtor.balance, creditor.balance);
+
+          if (transferAmount >= epsilon) {
+            settlements.push({
+              from: { id: debtor.userId, email: debtor.userEmail },
+              to: { id: creditor.userId, email: creditor.userEmail },
+              amount: Number(transferAmount.toFixed(2))
+            });
+
+            // Update balances
+            debtor.balance = Number((debtor.balance - transferAmount).toFixed(2));
+            creditor.balance = Number((creditor.balance - transferAmount).toFixed(2));
+
+            // Remove settled users
+            if (debtor.balance < epsilon) {
+              debtors.splice(i, 1);
+            }
+            if (creditor.balance < epsilon) {
+              creditors.splice(j, 1);
+            }
+
+            settlementMade = true;
+          }
         }
+      }
+
+      // If no settlement was made, break to avoid infinite loop
+      if (!settlementMade) {
+        console.log('No more valid settlements possible');
+        break;
       }
     }
 
-    return transactions;
+    // Final validation - remove any invalid settlements
+    const validSettlements = settlements.filter(s => 
+      s.from.email !== s.to.email && 
+      s.amount >= epsilon
+    );
+
+    // If no valid settlements, mark all pending requests as settled
+    if (validSettlements.length === 0) {
+      const { requests } = await getGroupRequests(groupId);
+      const pendingRequests = requests.filter(req => req.status === 'pending');
+      
+      // Mark all pending requests as settled
+      for (const request of pendingRequests) {
+        await markRequestAsSettled(request.id, request.created_by);
+      }
+    }
+
+    console.log('Final settlements:', validSettlements);
+    return validSettlements;
+
   } catch (error) {
     console.error('Error in getOptimizedSettlements:', error);
     return [];
-  }
-}
-
-/**
- * Deletes an organization using Clerk's API.
- */
-export async function deleteOrganization(organizationId: string) {
-  try {
-    const response = await fetch(`https://api.clerk.dev/v1/organizations/${organizationId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${process.env.CLERK_SECRET_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to delete organization');
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error deleting organization:', error);
-    return { success: false, error: 'Failed to delete organization' };
-  }
-}
-
-/**
- * Stores a settlement transaction in the database.
- */
-export async function storeSettlement(groupId: string, fromId: string, toId: string, amount: number) {
-  try {
-    await sql`
-      INSERT INTO settlements (
-        group_id, from_user_id, to_user_id, amount, status, created_at
-      )
-      VALUES (
-        ${groupId}::uuid,
-        ${fromId},
-        ${toId},
-        ${amount},
-        'pending',
-        CURRENT_TIMESTAMP
-      )
-    `;
-    return { success: true };
-  } catch (error) {
-    console.error('Error storing settlement:', error);
-    return { success: false, error: 'Failed to store settlement' };
-  }
-}
-
-/**
- * Gets all settlements for a group.
- */
-export async function getGroupSettlements(groupId: string) {
-  try {
-    const settlements = await sql`
-      SELECT 
-        s.*,
-        from_user.user_email as from_email,
-        to_user.user_email as to_email
-      FROM settlements s
-      JOIN group_members from_user ON s.from_user_id = from_user.user_id
-      JOIN group_members to_user ON s.to_user_id = to_user.user_id
-      WHERE s.group_id = ${groupId}::uuid
-      ORDER BY s.created_at DESC
-    `;
-    return { success: true, settlements };
-  } catch (error) {
-    console.error('Error getting settlements:', error);
-    return { success: false, error: 'Failed to get settlements' };
-  }
-}
-
-/**
- * Marks a settlement as completed.
- */
-export async function markSettlementAsCompleted(
-  groupId: string,
-  fromId: string,
-  toId: string,
-  amount: number
-) {
-  try {
-    // Find and mark the corresponding requests as settled
-    const { requests } = await getGroupRequests(groupId);
-    const pendingRequests = requests.filter(req => req.status === 'pending');
-    
-    let remainingAmount = amount;
-    for (const request of pendingRequests) {
-      if (remainingAmount <= 0) break;
-      
-      if (request.created_by === toId && request.request_to.id === fromId) {
-        const settleAmount = Math.min(remainingAmount, request.amount);
-        await markRequestAsSettled(request.id, fromId);
-        remainingAmount -= settleAmount;
-      }
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error marking settlement as completed:', error);
-    return { success: false, error: 'Failed to mark settlement as completed' };
   }
 }

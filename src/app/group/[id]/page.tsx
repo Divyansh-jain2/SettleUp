@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Trash2, CheckCircle2 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
-import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, getGroupMembers, getUserGroups, markSettlementAsCompleted } from '@/app/actions';
+import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, getGroupMembers, getUserGroups } from '@/app/actions';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
@@ -139,23 +139,32 @@ function GroupPage() {
     if (!user) return;
     
     try {
-      const result = await markSettlementAsCompleted(
-        id as string,
-        settlement.from.id,
-        settlement.to.id,
-        settlement.amount
-      );
+      // Get all pending requests
+      const { requests } = await getGroupRequests(id as string);
+      const pendingRequests = requests.filter(req => req.status === 'pending');
       
-      if (result.success) {
-        // Refresh the data
-        const { requests } = await getGroupRequests(id as string);
-        setRequests(requests);
-        const optimizedSettlements = await getOptimizedSettlements(id as string);
-        setSettlements(optimizedSettlements);
-        toast.success('Settlement marked as completed');
-      } else {
-        toast.error('Failed to mark settlement as completed');
+      // Find requests that match this settlement
+      const matchingRequests = pendingRequests.filter(req => 
+        req.created_by === settlement.to.id && 
+        req.request_to.id === settlement.from.id
+      );
+
+      // Mark matching requests as settled
+      let remainingAmount = settlement.amount;
+      for (const request of matchingRequests) {
+        if (remainingAmount <= 0) break;
+        
+        const settleAmount = Math.min(remainingAmount, Number(request.amount));
+        await markRequestAsSettled(request.id, user.id);
+        remainingAmount -= settleAmount;
       }
+
+      // Refresh the data
+      const { requests: updatedRequests } = await getGroupRequests(id as string);
+      setRequests(updatedRequests);
+      const optimizedSettlements = await getOptimizedSettlements(id as string);
+      setSettlements(optimizedSettlements);
+      toast.success('Settlement marked as completed');
     } catch (error) {
       console.error('Error marking settlement as completed:', error);
       toast.error('Failed to mark settlement as completed');
