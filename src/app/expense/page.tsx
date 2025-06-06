@@ -1,7 +1,7 @@
 'use client';
 
 import { useOrganization, useOrganizationList, useUser } from '@clerk/nextjs';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { addRequest } from '../actions';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,27 @@ export default function AddRequest() {
   const { userMemberships, isLoaded: isOrgListLoaded } = useOrganizationList({ userMemberships: true });
   const { isLoaded: isOrgLoaded } = useOrganization();
 
+  const fetchMembers = useCallback(async (orgId: string) => {
+    try {
+      const org = userMemberships.data?.find(
+        (membership) => membership.organization.id === orgId
+      )?.organization;
+      if (org) {
+        const memberships = await org.getMemberships();
+        const membersList = memberships.data.map((membership) => ({
+          id: membership.publicUserData?.userId ?? '',
+          name: `${membership.publicUserData?.firstName ?? ''} ${membership.publicUserData?.lastName ?? ''}`.trim(),
+          email: membership.publicUserData?.identifier ?? '',
+        }));
+        console.log('Fetched members:', membersList);
+        setMembers(membersList);
+      }
+    } catch (error) {
+      console.error('Error fetching members:', error);
+      toast.error('Failed to fetch group members. Please try again.');
+    }
+  }, [userMemberships.data]);
+
   useEffect(() => {
     if (isOrgListLoaded && userMemberships.data) {
       const orgs = userMemberships.data.map((membership) => ({
@@ -51,41 +72,20 @@ export default function AddRequest() {
         fetchMembers(defaultOrgId);
       }
     }
-  }, [isOrgListLoaded, userMemberships.data, group]);
+  }, [isOrgListLoaded, userMemberships.data, group, fetchMembers]);
 
-  const fetchMembers = async (orgId: string) => {
-    try {
-      const org = userMemberships.data?.find(
-        (membership) => membership.organization.id === orgId
-      )?.organization;
-      if (org) {
-        const memberships = await org.getMemberships();
-        const membersList = memberships.data.map((membership) => ({
-          id: membership.publicUserData?.userId ?? '',
-          name: `${membership.publicUserData?.firstName ?? ''} ${membership.publicUserData?.lastName ?? ''}`.trim(),
-          email: membership.publicUserData?.identifier ?? '',
-        }));
-        console.log('Fetched members:', membersList); // Debug log
-        setMembers(membersList);
-      }
-    } catch (error) {
-      console.error('Error fetching members:', error);
-      toast.error('Failed to fetch group members. Please try again.');
-    }
-  };
-
-  const handleGroupChange = (orgId: string) => {
+  const handleGroupChange = useCallback((orgId: string) => {
     setGroup(orgId);
     fetchMembers(orgId);
     setRequestTo(null);
-  };
+  }, [fetchMembers]);
 
-  const handleRequestToSelect = (value: string) => {
+  const handleRequestToSelect = useCallback((value: string) => {
     const selectedMember = members.find((member) => member.id === value);
     if (selectedMember) {
       setRequestTo(selectedMember);
     }
-  };
+  }, [members]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();

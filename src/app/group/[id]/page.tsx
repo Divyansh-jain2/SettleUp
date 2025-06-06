@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Trash2, CheckCircle2 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
-import { useOrganizationList, useUser, useOrganization } from '@clerk/nextjs';
+import { useOrganizationList, useUser } from '@clerk/nextjs';
 import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, deleteOrganization } from '@/app/actions';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,6 @@ function GroupPage() {
   const { id } = useParams();
   const { userMemberships, isLoaded: orgLoaded } = useOrganizationList({ userMemberships: { infinite: true } });
   const { user, isLoaded: userLoaded } = useUser();
-  const { organization } = useOrganization();
   const router = useRouter();
   const [requests, setRequests] = useState<ActionRequest[]>([]);
   const [settlements, setSettlements] = useState<SettlementTransaction[]>([]);
@@ -61,7 +60,7 @@ function GroupPage() {
     return (
       <div className="flex flex-col items-center justify-center h-screen">
         <h1 className="text-2xl font-bold text-red-600 mb-4">Organization not found</h1>
-        <p className="text-gray-600 mb-4">You might not have access to this organization or it doesn't exist.</p>
+        <p className="text-gray-600 mb-4">You might not have access to this organization or it doesn&apos;t exist.</p>
         <Link href="/groups">
           <Button className="bg-purple-600 text-white px-4 py-2 rounded-md">
             Back to Groups
