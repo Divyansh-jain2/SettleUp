@@ -135,42 +135,6 @@ function GroupPage() {
     }
   };
 
-  const handleMarkSettlementAsCompleted = async (settlement: SettlementTransaction) => {
-    if (!user) return;
-    
-    try {
-      // Get all pending requests
-      const { requests } = await getGroupRequests(id as string);
-      const pendingRequests = requests.filter(req => req.status === 'pending');
-      
-      // Find requests that match this settlement
-      const matchingRequests = pendingRequests.filter(req => 
-        req.created_by === settlement.to.id && 
-        req.request_to.id === settlement.from.id
-      );
-
-      // Mark matching requests as settled
-      let remainingAmount = settlement.amount;
-      for (const request of matchingRequests) {
-        if (remainingAmount <= 0) break;
-        
-        const settleAmount = Math.min(remainingAmount, Number(request.amount));
-        await markRequestAsSettled(request.id, user.id);
-        remainingAmount -= settleAmount;
-      }
-
-      // Refresh the data
-      const { requests: updatedRequests } = await getGroupRequests(id as string);
-      setRequests(updatedRequests);
-      const optimizedSettlements = await getOptimizedSettlements(id as string);
-      setSettlements(optimizedSettlements);
-      toast.success('Settlement marked as completed');
-    } catch (error) {
-      console.error('Error marking settlement as completed:', error);
-      toast.error('Failed to mark settlement as completed');
-    }
-  };
-
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex justify-between items-center mb-6">
@@ -199,7 +163,7 @@ function GroupPage() {
       {settlements.length > 0 ? (
         <>
           <div className="flex justify-between items-center mb-4">
-            <p className="text-gray-600">Here's how to settle all debts:</p>
+            <p className="text-gray-600">Here&apos;s how to settle all debts:</p>
             <Button
               onClick={async () => {
                 if (!user) return;
