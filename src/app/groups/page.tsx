@@ -5,7 +5,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import Link from 'next/link';
+
 import { getUserGroups, updateMemberUserId } from '@/app/actions';
 import type { Group } from '@/app/actions';
 import toast from 'react-hot-toast';
@@ -63,7 +63,7 @@ export default function GroupsPage() {
 
       {groups.length === 0 ? (
         <div className="text-center py-8">
-          <p className="text-gray-500">You haven't joined any groups yet.</p>
+          <p className="text-gray-500">You have not joined any groups yet.</p>
           <Button 
             onClick={() => router.push('/group')}
             className="mt-4"

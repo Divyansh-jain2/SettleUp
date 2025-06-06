@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Trash2, CheckCircle2 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
-import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, getGroupMembers, GroupMember, getUserGroups, markSettlementAsCompleted } from '@/app/actions';
+import { getGroupRequests, deleteRequest, Request as ActionRequest, getOptimizedSettlements, SettlementTransaction, markRequestAsSettled, deleteGroup, getGroupMembers, getUserGroups, markSettlementAsCompleted } from '@/app/actions';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';

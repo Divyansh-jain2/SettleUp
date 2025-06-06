@@ -1,7 +1,6 @@
 'use server';
 
 import { neon } from '@neondatabase/serverless';
-import { clerkClient } from '@clerk/nextjs/server';
 
 // Assumption: DATABASE_URL is configured in your environment variables.
 if (!process.env.DATABASE_URL) {
