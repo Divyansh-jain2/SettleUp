@@ -1,7 +1,7 @@
 'use client';
 
 import { useUser } from '@clerk/nextjs';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { addRequest, getUserGroups, getGroupMembers, Group } from '../actions';
 import { Button } from '@/components/ui/button';
@@ -32,6 +32,17 @@ export default function AddRequest() {
 
   const { user, isLoaded: isUserLoaded } = useUser();
 
+  const fetchMembers = useCallback(async (groupId: string) => {
+    try {
+      const { members } = await getGroupMembers(groupId);
+      const filteredMembers = members.filter(member => member.user_id !== user?.id);
+      setMembers(filteredMembers as Member[]);
+    } catch (error) {
+      console.error('Error fetching members:', error);
+      toast.error('Failed to fetch group members');
+    }
+  }, [user]);
+
   useEffect(() => {
     async function fetchGroups() {
       if (user) {
@@ -56,18 +67,7 @@ export default function AddRequest() {
     if (isUserLoaded) {
       fetchGroups();
     }
-  }, [isUserLoaded, user, group]);
-
-  const fetchMembers = async (groupId: string) => {
-    try {
-      const { members } = await getGroupMembers(groupId);
-      const filteredMembers = members.filter(member => member.user_id !== user?.id);
-      setMembers(filteredMembers as Member[]);
-    } catch (error) {
-      console.error('Error fetching members:', error);
-      toast.error('Failed to fetch group members');
-    }
-  };
+  }, [isUserLoaded, user, group, fetchMembers]);
 
   const handleGroupChange = (groupId: string) => {
     setGroup(groupId);

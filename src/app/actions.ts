@@ -59,18 +59,6 @@ export interface SettlementTransaction {
   amount: number;
 }
 
-interface Balance {
-  userId: string;
-  userEmail: string;
-  amount: number;
-}
-
-interface Transaction {
-  from: { id: string; email: string };
-  to: { id: string; email: string };
-  amount: number;
-}
-
 // --- DATABASE FUNCTIONS ---
 
 /**
@@ -433,10 +421,10 @@ export async function getOptimizedSettlements(groupId: string): Promise<Settleme
     console.log('Initial balances:', balances);
 
     // Separate users into debtors and creditors
-    let debtors = balances
+    const debtors = balances
       .filter(b => b.balance < 0)
       .map(b => ({ ...b, balance: Math.abs(b.balance) })); // Convert to positive for easier calculation
-    let creditors = balances
+    const creditors = balances
       .filter(b => b.balance > 0)
       .map(b => ({ ...b }));
 
