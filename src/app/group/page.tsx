@@ -8,12 +8,6 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 
-interface Organization {
-  id: string;
-  name: string;
-  role: string;
-}
-
 export default function CreateGroup() {
   const [groupName, setGroupName] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
@@ -85,12 +79,6 @@ export default function CreateGroup() {
       setInviteEmail('');
     }
   };
-
-  const organizations = userMemberships.data?.map((membership) => ({
-    id: membership.organization.id,
-    name: membership.organization.name,
-    role: membership.role,
-  })) as Organization[];
 
   return (
     <div className="container mx-auto px-4 py-8 sm:px-6 lg:px-8 max-w-2xl">

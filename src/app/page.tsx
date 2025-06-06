@@ -1,8 +1,10 @@
 'use client';
 
 import React from 'react';
+import { Users, UserPlus, LineChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import FeatureCard from '@/components/FeatureCard';
 
 export default function LandingPage() {
   return (
