@@ -38,9 +38,9 @@ export default function CreateGroup() {
             emailAddress: email,
             role: 'org:member',
           });
-        } catch (inviteError: any) {
+        } catch (inviteError: unknown) {
           if (
-            inviteError?.message &&
+            inviteError instanceof Error &&
             inviteError.message.includes('is already a member')
           ) {
             console.info(`${email} is already a member, skipping invite.`);
@@ -52,11 +52,11 @@ export default function CreateGroup() {
       }
 
       // Wait for the organization list to be refreshed
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       
       // Verify that the organization exists in the user's memberships
       const orgExists = userMemberships.data?.some(
-        membership => membership.organization.id === organization.id
+        (membership) => membership.organization.id === organization.id
       );
 
       if (!orgExists) {

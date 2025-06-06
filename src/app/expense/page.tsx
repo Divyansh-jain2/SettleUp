@@ -1,18 +1,18 @@
 'use client';
 
 import { useOrganization, useOrganizationList, useUser } from '@clerk/nextjs';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { addRequest } from '../actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from '@/components/ui/select';
 
 interface Organization {
@@ -38,22 +38,7 @@ export default function AddRequest() {
   const { userMemberships, isLoaded: isOrgListLoaded } = useOrganizationList({ userMemberships: true });
   const { isLoaded: isOrgLoaded } = useOrganization();
 
-  useEffect(() => {
-    if (isOrgListLoaded && userMemberships.data) {
-      const orgs = userMemberships.data.map((membership) => ({
-        id: membership.organization.id,
-        name: membership.organization.name,
-      }));
-      setOrganizations(orgs);
-      if (orgs.length > 0 && !group) {
-        const defaultOrgId = orgs[0].id;
-        setGroup(defaultOrgId);
-        fetchMembers(defaultOrgId);
-      }
-    }
-  }, [isOrgListLoaded, userMemberships.data, group]);
-
-  const fetchMembers = async (orgId: string) => {
+  const fetchMembers = useCallback(async (orgId: string) => {
     try {
       const org = userMemberships.data?.find(
         (membership) => membership.organization.id === orgId
@@ -72,7 +57,22 @@ export default function AddRequest() {
       console.error('Error fetching members:', error);
       toast.error('Failed to fetch group members. Please try again.');
     }
-  };
+  }, [userMemberships.data]);
+
+  useEffect(() => {
+    if (isOrgListLoaded && userMemberships.data) {
+      const orgs = userMemberships.data.map((membership) => ({
+        id: membership.organization.id,
+        name: membership.organization.name,
+      }));
+      setOrganizations(orgs);
+      if (orgs.length > 0 && !group) {
+        const defaultOrgId = orgs[0].id;
+        setGroup(defaultOrgId);
+        fetchMembers(defaultOrgId);
+      }
+    }
+  }, [isOrgListLoaded, userMemberships.data, group, fetchMembers]);
 
   const handleGroupChange = (orgId: string) => {
     setGroup(orgId);
